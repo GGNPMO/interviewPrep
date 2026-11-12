@@ -343,7 +343,10 @@ builder.Services.AddAuthorization(o =>
 {
     o.AddPolicy("CanApproveClaims", p => p
         .RequireAuthenticatedUser()
-        .RequireClaim("scope", "claims.approve")
+        // OAuth scope is commonly represented as a space-delimited claim.
+        .RequireAssertion(ctx => ctx.User.FindAll("scope")
+            .SelectMany(c => c.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Contains("claims.approve", StringComparer.Ordinal))
         .RequireAssertion(ctx => ctx.User.HasClaim("amr", "mfa")));   // step-up: require MFA
     o.FallbackPolicy = new AuthorizationPolicyBuilder()               // secure by default
         .RequireAuthenticatedUser().Build();
@@ -576,7 +579,7 @@ Claims UI (React) -> BFF -> Claims API
 | Background job / service acting as itself (no user) | **OAuth2 Client Credentials** (`scope`/app roles), or managed identity / workload identity (no secrets) |
 | Service acting for the user | **User token propagation** *or* **On-Behalf-Of / Token Exchange (RFC 8693)** |
 | Defence in depth inside cluster | **mTLS** via service mesh (Istio/Linkerd) or Dapr; Kubernetes NetworkPolicies |
-| Async messages | Broker-level auth (SAS / RBAC / TLS) + **claims embedded in message headers**, signed if needed |
+| Async messages | Broker-level auth (SAS / RBAC / TLS) plus verifiable message metadata; re-authorize at the consumer when user context matters |
 
 **Golden rules**
 - Zero-trust: **never trust a request because it comes from inside the network.** Every service validates a token.
@@ -663,8 +666,10 @@ builder.Services.AddTransient<ClientCredentialsHandler>();
 builder.Services.AddHttpClient<IInventoryClient, InventoryClient>(c =>
         c.BaseAddress = new Uri("https://inventory.internal"))
     .AddHttpMessageHandler<ClientCredentialsHandler>()
-    .AddStandardResilienceHandler();                    // retry, timeout, circuit breaker (Microsoft.Extensions.Http.Resilience)
+    .AddStandardResilienceHandler();                    // package-provided standard pipeline; review retry rules for this client
 ```
+
+`Microsoft.Extensions.Http.Resilience` is available as a package for modern .NET versions, including .NET 8. The standard handler has default retry behavior, so do not assume it is safe for every HTTP method. For non-idempotent operations, use an idempotency key and configure the pipeline explicitly, or disable retries for that client.
 
 **Callee side - validate the token and the scope:**
 
@@ -678,7 +683,10 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 
 builder.Services.AddAuthorization(o =>
-    o.AddPolicy("InventoryRead", p => p.RequireClaim("scope", "inventory.read")));
+    o.AddPolicy("InventoryRead", p => p.RequireAssertion(ctx =>
+        ctx.User.FindAll("scope")
+            .SelectMany(c => c.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Contains("inventory.read", StringComparer.Ordinal))));
 
 app.MapGet("/stock/{id:int}", (int id) => Results.Ok(new { id, qty = 12 }))
    .RequireAuthorization("InventoryRead");

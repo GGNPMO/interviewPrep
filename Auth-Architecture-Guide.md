@@ -693,7 +693,10 @@ builder.Services.AddAuthorization(o =>
     o.AddPolicy("CanApprovePayout", p => p
         .RequireAuthenticatedUser()
         .RequireRole("Manager")
-        .RequireClaim("scope", "payout.approve")
+        // Many OAuth providers emit scope as one space-delimited claim.
+        .RequireAssertion(c => c.User.FindAll("scope")
+            .SelectMany(x => x.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Contains("payout.approve", StringComparer.Ordinal))
         .RequireAssertion(c => c.User.HasClaim("amr", "mfa")));   // MFA required
 
     o.FallbackPolicy = new AuthorizationPolicyBuilder()
@@ -1260,6 +1263,21 @@ GDPR/DPDP (India) - consent, data minimisation, right to erasure; PCI-DSS - card
 
 ## 8.8 Threat modelling
 Use **STRIDE**: Spoofing, Tampering, Repudiation, Information disclosure, Denial of service, Elevation of privilege. For each component/data flow ask: *what can go wrong, how likely, impact, mitigation?* Do it at design time (cheap) not after a breach (expensive).
+
+## 8.9 Authorization verification and claim freshness
+
+Authorization should be tested as a matrix, not only as a happy-path login test. For each sensitive endpoint test at least:
+
+| Caller | Resource | Expected result |
+|---|---|---|
+| Anonymous | Any | `401` or the configured login challenge |
+| Authenticated customer | Own resource | `200`/success when the policy allows it |
+| Authenticated customer | Another user's resource | `404` or `403`, according to the information-disclosure policy |
+| Authenticated user | Another tenant's resource | Usually `404`; never return the data |
+| Manager without required MFA | High-risk action | `403` or step-up challenge |
+| Service token for another API | This API | `401`/`403` because `aud` is wrong |
+
+Do not assume that a role or permission claim is current forever. Role changes, account disablement and emergency revocation may require short-lived access tokens, a server-side session check, refresh-token revocation, or an event-driven session invalidation mechanism. The right choice depends on the required revocation window and availability budget.
 
 ---
 

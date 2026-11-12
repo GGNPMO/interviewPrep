@@ -889,6 +889,7 @@ public sealed class OutboxPublisher(IServiceScopeFactory scopes) : BackgroundSer
 Production concerns:
 
 - **Multiple relay instances:** use row locking (for example `UPDLOCK, READPAST` in SQL Server) or a leader election, otherwise two relays may publish the same message.
+- **Claiming work:** selecting rows with a lock is not enough if the transaction ends before publication. Use a lease/claim state (`ClaimedUntilUtc`, owner and attempt count), or an outbox library with a documented concurrency strategy. A crash after publish and before marking sent is still a duplicate-delivery case, so the consumer remains idempotent.
 - **Ordering:** relay in insertion order per aggregate if consumers depend on it.
 - **Cleanup:** purge old processed rows.
 - **Monitoring:** alert on outbox backlog and age of the oldest unsent message.
@@ -1047,7 +1048,7 @@ Rules:
 3. **Explicit versioning** when a breaking change is unavoidable: a new event type or version (`OrderPlaced.v2`), published **alongside** the old one during a deprecation window, then retire the old one once all consumers migrate.
 4. **Schema registry** (Confluent Schema Registry, Azure Schema Registry) with Avro/Protobuf/JSON Schema and compatibility modes (backward, forward, full) enforced in CI.
 5. **Consumer-driven contract tests** (Pact) so producers know who breaks if they change.
-6. **Metadata in headers:** event type, schema version, message ID, correlation ID, timestamp.
+6. **Non-authoritative metadata in headers:** event type, schema version, message ID, correlation ID, timestamp. Treat user identity or permissions in headers as untrusted unless the message is authenticated and integrity-protected; consumers must re-authorize sensitive actions.
 7. **Documentation and ownership:** a catalog (for example AsyncAPI) listing events, owners and consumers.
 8. **Deprecation policy:** announce, dual-publish, measure remaining consumers, remove.
 

@@ -550,6 +550,41 @@ END;
 
 Add monitoring, retry behavior and a cancellation mechanism. A batch is not automatically safe if it still holds locks for too long or runs inside one outer transaction.
 
+## 3.9 SQL Server high availability, recovery and operational boundaries
+
+Senior interviews often move from query tuning to data safety. Distinguish these concerns:
+
+| Concern | Typical mechanisms | Interview point |
+|---|---|---|
+| High availability | Availability Groups, failover cluster instances, platform-managed replicas | Keeps service available; it is not a backup |
+| Disaster recovery | Full, differential and log backups; restore to another region/site | Prove the restore process against the required RPO/RTO |
+| Read scaling | Readable secondary, replica or separate read model | Define replica-lag and read-after-write behavior |
+| Data retention | Partition switching, archival tables/storage, controlled purge | Deletion must respect legal hold and audit needs |
+| Deployment safety | Expand-contract schema changes, compatibility window, rollback plan | Old and new application versions may run concurrently |
+
+### Backup and restore example
+
+```sql
+BACKUP DATABASE Claims
+TO DISK = 'D:\\sqlbackups\\Claims_full.bak'
+WITH COMPRESSION, CHECKSUM, INIT;
+
+BACKUP LOG Claims
+TO DISK = 'D:\\sqlbackups\\Claims_2026-11-13_1200.trn'
+WITH CHECKSUM;
+```
+
+The commands are only examples; production paths, encryption, retention, permissions and backup tooling are environment-specific. A backup that has never been restored is not evidence of recoverability. Test point-in-time restore and measure the elapsed recovery time.
+
+### Common recovery questions
+
+- What is the recovery point objective (maximum acceptable data loss)?
+- What is the recovery time objective (maximum acceptable outage)?
+- Are log backups succeeding and is the log reuse wait understood?
+- Can the team restore a single database without breaking dependent services?
+- How are connection strings, DNS, secrets and application failover coordinated?
+- What is the consistency behavior during failover and replica lag?
+
 ---
 
 # PART 4 - TRANSACTIONS AND CONCURRENCY
