@@ -29,9 +29,11 @@ Every topic follows the **same template**, so you always know where to look:
 1.1 Authentication vs Authorization · 1.2 Core vocabulary · 1.3 Hashing vs Encryption vs Signing · 1.4 HTTPS/TLS · 1.5 Stateful vs Stateless · 1.6 The big picture of our project
 
 **PART 2 - Authentication Mechanisms**
+2.17 Account lifecycle and recovery
 2.1 Username + Password · 2.2 Password hashing · 2.3 Cookie authentication · 2.4 ASP.NET Core Identity · 2.5 JWT · 2.6 OAuth 2.0 · 2.7 OpenID Connect (OIDC) · 2.8 SAML · 2.9 Windows / Kerberos / NTLM · 2.10 API Keys · 2.11 Basic Auth · 2.12 Client certificates / mTLS · 2.13 MFA · 2.14 Passkeys / WebAuthn · 2.15 Social & Enterprise login (federation) · 2.16 Magic link / OTP / passwordless
 
 **PART 3 - Authorization Models**
+3.11 End-to-end authorization example
 3.1 Roles (RBAC) · 3.2 Claims-based · 3.3 Policy-based · 3.4 Resource-based · 3.5 ABAC · 3.6 ACL · 3.7 Scopes · 3.8 Externalised policy engines · 3.9 Multi-tenancy · 3.10 Relationship-based (ReBAC)
 
 **PART 4 - Authentication in the MVC App (internals)**
@@ -599,6 +601,38 @@ User receives a one-time link or code by email/SMS and logs in with it.
 
 ---
 
+## 2.17 Account lifecycle and recovery
+
+Authentication is more than the login screen. The account lifecycle must cover **provisioning, verification, recovery, suspension, deprovisioning and reactivation**.
+
+### Recommended lifecycle
+
+1. Create or provision the account with a stable identifier (`issuer + subject` for federated users, or an internal user id for local users).
+2. Verify the email or invitation before granting normal access; do not treat an unverified email as proof of identity.
+3. Assign the least-privileged default role. A user should not receive `Admin` merely because a client supplied that value during registration.
+4. Require MFA or a passkey for privileged users and step-up authentication for high-risk actions.
+5. Support recovery with short-lived, single-use tokens. Recovery must not silently weaken MFA for an administrator.
+6. Disable access immediately when an employee leaves, a tenant is suspended, or compromise is suspected. Revoke sessions and refresh-token families.
+7. Keep an audit record of invitations, verification, recovery, role changes, lockouts and deprovisioning.
+
+### Example: safe password-reset flow
+
+```text
+POST /account/forgot-password
+  -> Always return: "If the account exists, an email was sent."
+  -> Store only a hash of a random reset token.
+  -> Expire it after 15 minutes and accept it once.
+
+POST /account/reset-password
+  -> Validate token, password policy and rate limit.
+  -> Change the password, revoke sessions/refresh tokens,
+     and notify the user through a separate channel.
+```
+
+Never put reset tokens in logs, analytics URLs or support tickets. Do not reveal whether an email address exists; that turns recovery into a user-enumeration endpoint.
+
+---
+
 # PART 3 - AUTHORIZATION MODELS
 
 > Authorization answers **"can THIS user do THIS action on THIS resource right now?"**
@@ -787,6 +821,63 @@ Permissions derive from **relationships** in a graph (Google Zanzibar model): "u
 |---|---|
 | Natural for sharing/hierarchies | New mental model and infra |
 | Scales to billions of relations | Overkill for simple role systems |
+
+---
+
+## 3.11 End-to-end authorization example
+
+Use this sequence for every protected business operation:
+
+`authenticate caller -> validate token -> check coarse permission -> load resource safely -> check resource and tenant -> perform action -> audit result`
+
+### Example: customer reads one claim
+
+Assume the access token contains `sub=user-42`, `tid=tenant-7`, and `scope=claims.read`. The endpoint must check all of the following:
+
+1. The JWT signature, issuer, audience, expiry and not-before time are valid.
+2. The caller has the `claims.read` scope.
+3. The requested claim belongs to `tenant-7`.
+4. The caller owns the claim, or an explicit policy grants access (for example, an assigned adjuster or manager).
+
+```csharp
+[Authorize(Policy = "ClaimsRead")]
+[HttpGet("api/claims/{id}")]
+public async Task<IActionResult> GetClaim(Guid id, CancellationToken ct)
+{
+    var userId = User.FindFirstValue("sub");
+    var tenantId = User.FindFirstValue("tid");
+    if (userId is null || tenantId is null)
+        return Unauthorized();
+
+    // Tenant and ownership constraints belong in the query, not only in the UI.
+    var claim = await db.Claims.SingleOrDefaultAsync(c =>
+        c.Id == id && c.TenantId == tenantId &&
+        (c.CustomerId == userId || c.AssignedTo == userId), ct);
+
+    // Returning 404 avoids confirming that another tenant's claim exists.
+    if (claim is null)
+        return NotFound();
+
+    return Ok(claim);
+}
+```
+
+The React menu may hide an **Approve** button for a customer, but that is only usability. The API must still return `403` when an authenticated customer calls the approval endpoint. For a missing or cross-tenant resource, `404` is often preferable because it does not disclose resource existence.
+
+### Effective permission
+
+For a user-driven API call, the effective permission is the intersection of every relevant boundary:
+
+```text
+effective access = valid identity
+                ∩ token audience and scope
+                ∩ tenant membership
+                ∩ user role/claims
+                ∩ resource ownership or relationship
+                ∩ business conditions (status, amount, MFA, device, time)
+```
+
+A role, scope or UI check alone is never sufficient for sensitive data or state-changing operations.
 
 ---
 
